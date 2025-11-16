@@ -1,14 +1,38 @@
 import streamlit as st
 import string
 from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Cipher import PKCS1_OAEP, AES, DES
+from Crypto.Random import get_random_bytes
 import base64
+import hashlib
 
 # ================================
-# Cipher Algorithms
+# Utility functions (padding / base64 helpers)
+# ================================
+BLOCK_SIZE_AES = 16
+BLOCK_SIZE_DES = 8
+
+def pkcs7_pad(data: bytes, block_size: int) -> bytes:
+    pad_len = block_size - (len(data) % block_size)
+    return data + bytes([pad_len]) * pad_len
+
+def pkcs7_unpad(data: bytes) -> bytes:
+    pad_len = data[-1]
+    if pad_len < 1 or pad_len > len(data):
+        raise ValueError("Invalid padding")
+    return data[:-pad_len]
+
+def to_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+def from_b64(data: str) -> bytes:
+    return base64.b64decode(data.encode())
+
+# ================================
+# Classical Cipher Algorithms
 # ================================
 
-# ---------------- Vigenère Cipher ----------------
+# Vigenère
 def encryption_vigenere(plain_text, key):
     main = string.ascii_lowercase
     index = 0
@@ -43,14 +67,14 @@ def decryption_vigenere(cipher_text, key):
             plain_text += c
     return plain_text
 
-# ---------------- Caesar Cipher ----------------
+# Caesar
 def encrypt_caesar(text, shift):
     return ''.join([chr((ord(i) - 65 + shift) % 26 + 65) if 'A' <= i <= 'Z' else chr((ord(i) - 97 + shift) % 26 + 97) for i in text])
 
 def decrypt_caesar(text, shift):
     return ''.join([chr((ord(i) - 65 - shift) % 26 + 65) if 'A' <= i <= 'Z' else chr((ord(i) - 97 - shift) % 26 + 97) for i in text])
 
-# ---------------- Playfair Cipher ----------------
+# Playfair
 def key_generation_playfair(key):
     main = string.ascii_lowercase.replace('j', '.')
     key = key.lower()
@@ -156,9 +180,10 @@ def decrypt_playfair(key, cipher_text):
     key_matrix = key_generation_playfair(key)
     return conversion_dec_playfair(key_matrix, cipher_text)
 
-# ---------------- Rail Fence Cipher ----------------
+# Rail Fence
 def encrypt_railfence(text, key):
-    rail = [['\n' for i in range(len(text))] for j in range(key)]
+    rail = [['
+' for i in range(len(text))] for j in range(key)]
     dir_down = False
     row, col = 0, 0
     for i in range(len(text)):
@@ -170,12 +195,14 @@ def encrypt_railfence(text, key):
     result = []
     for i in range(key):
         for j in range(len(text)):
-            if rail[i][j] != '\n':
+            if rail[i][j] != '
+':
                 result.append(rail[i][j])
     return "".join(result)
 
 def decrypt_railfence(cipher, key):
-    rail = [['\n' for i in range(len(cipher))] for j in range(key)]
+    rail = [['
+' for i in range(len(cipher))] for j in range(key)]
     dir_down = None
     row, col = 0, 0
     for i in range(len(cipher)):
@@ -205,7 +232,11 @@ def decrypt_railfence(cipher, key):
         row = row + 1 if dir_down else row - 1
     return "".join(result)
 
-# ---------------- RSA Cipher ----------------
+# ================================
+# Modern Crypto: RSA, AES, DES, SHA-256
+# ================================
+
+# RSA
 def generate_rsa_keys():
     key = RSA.generate(2048)
     private_key = key.export_key()
@@ -216,13 +247,61 @@ def rsa_encrypt(public_key, message):
     rsa_key = RSA.import_key(public_key)
     cipher = PKCS1_OAEP.new(rsa_key)
     encrypted = cipher.encrypt(message.encode())
-    return base64.b64encode(encrypted).decode()
+    return to_b64(encrypted)
 
 def rsa_decrypt(private_key, encrypted_text):
     rsa_key = RSA.import_key(private_key)
     cipher = PKCS1_OAEP.new(rsa_key)
-    decrypted = cipher.decrypt(base64.b64decode(encrypted_text))
+    decrypted = cipher.decrypt(from_b64(encrypted_text))
     return decrypted.decode()
+
+# AES (CBC with PKCS7)
+def aes_derive_key(password: str, length=16) -> bytes:
+    # derive key from password using SHA-256, truncated to required length
+    return hashlib.sha256(password.encode()).digest()[:length]
+
+def aes_encrypt(password, plaintext):
+    key = aes_derive_key(password, 16)  # AES-128 by default
+    iv = get_random_bytes(BLOCK_SIZE_AES)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    data = pkcs7_pad(plaintext.encode(), BLOCK_SIZE_AES)
+    ct = cipher.encrypt(data)
+    return to_b64(iv + ct)
+
+def aes_decrypt(password, b64_cipher):
+    key = aes_derive_key(password, 16)
+    raw = from_b64(b64_cipher)
+    iv = raw[:BLOCK_SIZE_AES]
+    ct = raw[BLOCK_SIZE_AES:]
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    pt = cipher.decrypt(ct)
+    return pkcs7_unpad(pt).decode()
+
+# DES (CBC with PKCS7)
+def des_derive_key(password: str) -> bytes:
+    # DES key must be 8 bytes; derive via sha256 and truncate
+    return hashlib.sha256(password.encode()).digest()[:8]
+
+def des_encrypt(password, plaintext):
+    key = des_derive_key(password)
+    iv = get_random_bytes(BLOCK_SIZE_DES)
+    cipher = DES.new(key, DES.MODE_CBC, iv)
+    data = pkcs7_pad(plaintext.encode(), BLOCK_SIZE_DES)
+    ct = cipher.encrypt(data)
+    return to_b64(iv + ct)
+
+def des_decrypt(password, b64_cipher):
+    key = des_derive_key(password)
+    raw = from_b64(b64_cipher)
+    iv = raw[:BLOCK_SIZE_DES]
+    ct = raw[BLOCK_SIZE_DES:]
+    cipher = DES.new(key, DES.MODE_CBC, iv)
+    pt = cipher.decrypt(ct)
+    return pkcs7_unpad(pt).decode()
+
+# SHA-256
+def sha256_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
 
 # ================================
 # Streamlit UI
@@ -232,27 +311,30 @@ st.set_page_config(page_title="Cryptography Toolkit", page_icon="🔐", layout="
 st.title("🔐 Multi-Cipher Encryption-Decryption App")
 st.write("Explore classical and modern cryptography algorithms interactively.")
 
-cipher_type = st.sidebar.selectbox("Select Cipher", ["Vigenère", "Caesar", "Playfair", "Rail Fence", "RSA"])
-operation_type = st.sidebar.selectbox("Select Operation", ["Encryption", "Decryption"])
+mode = st.sidebar.radio("Mode", ["Classical Ciphers", "Modern Cryptography", "About & Help"])
 
-st.sidebar.info("Choose your cipher type and operation mode.")
+if 'history' not in st.session_state:
+    st.session_state.history = []
 
-# Cipher info tabs
-tab1, tab2 = st.tabs(["Encrypt / Decrypt", "About Cipher"])
+# About explanations
+explanations = {
+    "Vigenère": "A polyalphabetic substitution cipher that uses a keyword to shift letters.",
+    "Caesar": "A substitution cipher that shifts letters by a fixed number.",
+    "Playfair": "Uses a 5x5 letter matrix to encrypt pairs of letters.",
+    "Rail Fence": "A transposition cipher that writes text in a zig-zag pattern across rails.",
+    "RSA": "A modern asymmetric cipher using public and private keys for secure encryption.",
+    "AES": "Advanced Encryption Standard (AES) - a symmetric block cipher widely used in secure systems.",
+    "DES": "Data Encryption Standard (DES) - an older symmetric cipher (8-byte key).",
+    "SHA-256": "SHA-256 is a cryptographic hash function producing a 256-bit digest; it is one-way and not reversible."
+}
 
-with tab2:
-    explanations = {
-        "Vigenère": "A polyalphabetic substitution cipher that uses a keyword to shift letters.",
-        "Caesar": "A substitution cipher that shifts letters by a fixed number.",
-        "Playfair": "Uses a 5x5 letter matrix to encrypt pairs of letters.",
-        "Rail Fence": "A transposition cipher that writes text in a zig-zag pattern across rails.",
-        "RSA": "A modern asymmetric cipher using public and private keys for secure encryption."
-    }
-    st.markdown(f"### {cipher_type} Cipher Explanation")
-    st.info(explanations[cipher_type])
+if mode == "Classical Ciphers":
+    st.header("Classical Ciphers")
+    cipher_type = st.selectbox("Select Classical Cipher", ["Vigenère", "Caesar", "Playfair", "Rail Fence"])
+    operation_type = st.selectbox("Operation", ["Encryption", "Decryption"]) 
 
-with tab1:
     result = ""
+    text = ""
 
     if cipher_type == "Vigenère":
         key = st.text_input("Enter Key", "")
@@ -263,14 +345,16 @@ with tab1:
             if st.button("Start Encryption"):
                 if key and text:
                     result = encryption_vigenere(text, key)
-                    st.success(f"Encrypted Text: {result}")
+                    st.success("Encrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide key and text.")
         else:
             if st.button("Start Decryption"):
                 if key and text:
                     result = decryption_vigenere(text, key)
-                    st.success(f"Decrypted Text: {result}")
+                    st.success("Decrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide key and text.")
 
@@ -281,14 +365,16 @@ with tab1:
             if st.button("Start Encryption"):
                 if text:
                     result = encrypt_caesar(text, key)
-                    st.success(f"Encrypted Text: {result}")
+                    st.success("Encrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide text.")
         else:
             if st.button("Start Decryption"):
                 if text:
                     result = decrypt_caesar(text, key)
-                    st.success(f"Decrypted Text: {result}")
+                    st.success("Decrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide text.")
 
@@ -301,14 +387,16 @@ with tab1:
             if st.button("Start Encryption"):
                 if key and text:
                     result = encrypt_playfair(key, text)
-                    st.success(f"Encrypted Text: {result}")
+                    st.success("Encrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide key and text.")
         else:
             if st.button("Start Decryption"):
                 if key and text:
                     result = decrypt_playfair(key, text)
-                    st.success(f"Decrypted Text: {result}")
+                    st.success("Decrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide key and text.")
 
@@ -319,20 +407,34 @@ with tab1:
             if st.button("Start Encryption"):
                 if text:
                     result = encrypt_railfence(text, key)
-                    st.success(f"Encrypted Text: {result}")
+                    st.success("Encrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide text.")
         else:
             if st.button("Start Decryption"):
                 if text:
                     result = decrypt_railfence(text, key)
-                    st.success(f"Decrypted Text: {result}")
+                    st.success("Decrypted Text shown below")
+                    st.code(result)
                 else:
                     st.error("Please provide text.")
 
-    elif cipher_type == "RSA":
+    if result:
+        st.download_button("📥 Download Result", result)
+        st.session_state.history.append(("Classical", cipher_type, operation_type, text, result))
+
+elif mode == "Modern Cryptography":
+    st.header("Modern Cryptography")
+    cipher_type = st.selectbox("Select Modern Technique", ["RSA", "AES", "DES", "SHA-256"]) 
+    operation_type = st.selectbox("Operation", ["Encryption", "Decryption"])
+
+    result = ""
+    text = ""
+
+    if cipher_type == "RSA":
         st.subheader("RSA Key Generation")
-        if st.button("Generate Keys"):
+        if st.button("Generate RSA Keys"):
             private_key, public_key = generate_rsa_keys()
             st.session_state['rsa_private'] = private_key
             st.session_state['rsa_public'] = public_key
@@ -344,22 +446,119 @@ with tab1:
             if st.button("Start RSA Encryption"):
                 if 'rsa_public' in st.session_state:
                     result = rsa_encrypt(st.session_state['rsa_public'], text)
-                    st.success(f"Encrypted Text: {result}")
+                    st.success("Encrypted Text (base64) shown below")
+                    st.code(result)
                 else:
                     st.warning("Generate keys first.")
         else:
             if st.button("Start RSA Decryption"):
                 if 'rsa_private' in st.session_state:
-                    result = rsa_decrypt(st.session_state['rsa_private'], text)
-                    st.success(f"Decrypted Text: {result}")
+                    try:
+                        result = rsa_decrypt(st.session_state['rsa_private'], text)
+                        st.success("Decrypted Text shown below")
+                        st.code(result)
+                    except Exception as e:
+                        st.error("Decryption failed: invalid key/cipher text")
                 else:
                     st.warning("Generate keys first.")
 
+    elif cipher_type == "AES":
+        st.subheader("AES (CBC) - Symmetric Encryption")
+        password = st.text_input("Enter a password to derive AES key (or leave blank to auto-generate)", type="password")
+        if st.button("Generate Random AES Password"):
+            password = to_b64(get_random_bytes(8))
+            st.success("Random password generated (base64) - copy it to use for decryption")
+            st.code(password)
+        text = st.text_area("Enter Text", "")
+        if operation_type == "Encryption":
+            if st.button("Start AES Encryption"):
+                if text:
+                    if not password:
+                        st.warning("Please provide a password or generate one.")
+                    else:
+                        try:
+                            result = aes_encrypt(password, text)
+                            st.success("Encrypted Text (base64) shown below")
+                            st.code(result)
+                        except Exception as e:
+                            st.error(f"AES encryption failed: {e}")
+                else:
+                    st.error("Please provide text.")
+        else:
+            if st.button("Start AES Decryption"):
+                if text:
+                    if not password:
+                        st.warning("Please provide the password used during encryption.")
+                    else:
+                        try:
+                            result = aes_decrypt(password, text)
+                            st.success("Decrypted Text shown below")
+                            st.code(result)
+                        except Exception as e:
+                            st.error("AES decryption failed: invalid password or ciphertext")
+
+    elif cipher_type == "DES":
+        st.subheader("DES (CBC) - Symmetric Encryption")
+        password = st.text_input("Enter a password to derive DES key (or leave blank to auto-generate)", type="password", key="des_pwd")
+        if st.button("Generate Random DES Password"):
+            password = to_b64(get_random_bytes(6))
+            st.success("Random password generated (base64) - copy it to use for decryption")
+            st.code(password)
+        text = st.text_area("Enter Text", "")
+        if operation_type == "Encryption":
+            if st.button("Start DES Encryption"):
+                if text:
+                    if not password:
+                        st.warning("Please provide a password or generate one.")
+                    else:
+                        try:
+                            result = des_encrypt(password, text)
+                            st.success("Encrypted Text (base64) shown below")
+                            st.code(result)
+                        except Exception as e:
+                            st.error(f"DES encryption failed: {e}")
+                else:
+                    st.error("Please provide text.")
+        else:
+            if st.button("Start DES Decryption"):
+                if text:
+                    if not password:
+                        st.warning("Please provide the password used during encryption.")
+                    else:
+                        try:
+                            result = des_decrypt(password, text)
+                            st.success("Decrypted Text shown below")
+                            st.code(result)
+                        except Exception as e:
+                            st.error("DES decryption failed: invalid password or ciphertext")
+
+    elif cipher_type == "SHA-256":
+        st.subheader("SHA-256 Hashing (one-way)")
+        text = st.text_area("Enter Text", "")
+        if st.button("Compute SHA-256 Hash"):
+            if text:
+                result = sha256_hash(text)
+                st.success("SHA-256 Digest (hex) shown below")
+                st.code(result)
+            else:
+                st.error("Please provide text.")
+
     if result:
         st.download_button("📥 Download Result", result)
+        st.session_state.history.append(("Modern", cipher_type, operation_type, text, result))
 
-        if 'history' not in st.session_state:
-            st.session_state.history = []
-        st.session_state.history.append((cipher_type, operation_type, text, result))
-        st.write("### Recent Operations")
-        st.dataframe(st.session_state.history[-5:])
+else:
+    st.header("About & Help")
+    st.write("This application demonstrates multiple classical and modern cryptography techniques. Use the side menu to switch between Classical and Modern cryptography modes.")
+    st.write("Notes:")
+    st.write("- SHA-256 is a one-way hash; it cannot be decrypted.")
+    st.write("- AES and DES use a password to derive a symmetric key. Keep the password safe for decryption.")
+    st.write("- RSA requires you to generate keys first and then use the public key for encryption and the private key for decryption.")
+
+# Finally show recent history
+if st.sidebar.checkbox("Show Recent Operations"):
+    st.sidebar.write("Recent operations (most recent last):")
+    if st.session_state.history:
+        st.sidebar.dataframe(st.session_state.history[-10:], width=400)
+    else:
+        st.sidebar.write("No operations yet.")
